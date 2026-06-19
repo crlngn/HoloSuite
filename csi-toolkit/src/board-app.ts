@@ -8,6 +8,7 @@ import {
   normalizeConnection,
   randomId
 } from "./case-model";
+import { escapeHtml } from "./text-utils";
 
 declare const foundry: any;
 declare const game: any;
@@ -31,8 +32,19 @@ export function createCSICaseBoardClass(deps: any) {
     defaultBoardPosition,
     getRectEdgeAnchor,
     isFinitePoint,
+    openJournalByUuid,
+    readJournalDropData,
+    toggleFavorite,
+    canFavorite,
     clearBoardApp
   } = deps;
+
+  const JOURNAL_DROP_COLLECTIONS = [
+    { id: "evidence", label: "Evidence" },
+    { id: "suspects", label: "Suspect" },
+    { id: "locations", label: "Location" },
+    { id: "timeline", label: "Timeline Item" }
+  ];
 
   return class CSICaseBoard extends LegacyApplication {
     caseId: string;
@@ -94,6 +106,7 @@ export function createCSICaseBoardClass(deps: any) {
     activateListeners(html: any) {
       super.activateListeners(html);
       html.find("[data-action='open-manager']").on("click", () => openCaseManager());
+      html.find("[data-action='toggle-favorite']").on("click", () => this._toggleFavorite());
       html.find("[data-action='refresh-board']").on("click", () => this._reloadSharedBoard());
       html.find("[data-action='publish-layout']").on("click", () => this._publishLayout());
       html.find("[data-action='zoom-in']").on("click", () => this._zoomBy(0.1));
@@ -111,10 +124,14 @@ export function createCSICaseBoardClass(deps: any) {
         viewport.addEventListener("wheel", (event: any) => this._onWheel(event), { passive: false });
         viewport.addEventListener("mousedown", (event: any) => this._onViewportMouseDown(event));
         viewport.addEventListener("contextmenu", (event: any) => this._openContextMenu(event));
+        viewport.addEventListener("dragover", (event: any) => this._onBoardDragOver(event));
+        viewport.addEventListener("dragleave", (event: any) => this._onBoardDragLeave(event));
+        viewport.addEventListener("drop", (event: any) => this._onBoardDrop(event));
       }
 
       html.find("[data-csi-board-card]").on("mousedown", (event: any) => this._onCardMouseDown(event));
       html.find("[data-csi-board-card]").on("click", (event: any) => this._completeConnection(event));
+      html.find("[data-csi-board-card]").on("dblclick", (event: any) => this._onCardDoubleClick(event));
       html.find(".csi-card-image").on("load", () => this._queueConnectionLineUpdate());
       this._syncDimControls();
       this._applyDimmedKinds();
@@ -235,12 +252,26 @@ export function createCSICaseBoardClass(deps: any) {
     _onWheel(event: any) {
       event.preventDefault();
       this._hideContextMenu();
-      this._zoomBy(event.deltaY > 0 ? -0.08 : 0.08);
+      this._zoomBy(event.deltaY > 0 ? -0.08 : 0.08, { clientX: event.clientX, clientY: event.clientY });
     }
 
-    _zoomBy(delta: number) {
+    _zoomBy(delta: number, anchor?: { clientX: number; clientY: number }) {
       const layout = this._getLayout();
-      layout.view.scale = clamp(Number(layout.view.scale) + delta, 0.45, 1.8);
+      const oldScale = Number(layout.view.scale);
+      const newScale = clamp(oldScale + delta, 0.45, 1.8);
+      if (anchor && newScale !== oldScale) {
+        const viewport = this.element[0]?.querySelector("[data-csi-board-viewport]");
+        const rect = viewport?.getBoundingClientRect();
+        if (rect) {
+          // Keep the board point under the cursor fixed while the scale changes.
+          const pointerX = anchor.clientX - rect.left;
+          const pointerY = anchor.clientY - rect.top;
+          const ratio = newScale / oldScale;
+          layout.view.x = Math.round(pointerX - (pointerX - layout.view.x) * ratio);
+          layout.view.y = Math.round(pointerY - (pointerY - layout.view.y) * ratio);
+        }
+      }
+      layout.view.scale = newScale;
       this._applyView(layout.view);
       this._saveLayout(layout);
     }
@@ -347,6 +378,89 @@ export function createCSICaseBoardClass(deps: any) {
     _editCard(collection: string, itemId: string) {
       if (!canUserEditBoard(this.caseId)) return;
       new CSIBoardItemEditor(this.caseId, collection, itemId).render(true);
+    }
+
+    _onCardDoubleClick(event: any) {
+      if (event.target.closest("button, input, select, textarea")) return;
+      const card = event.currentTarget;
+      const collection = card.dataset.collection;
+      const itemId = card.dataset.itemId;
+      const csiCase = getCase(this.caseId);
+      const item = csiCase?.[collection]?.find((candidate: any) => candidate.id === itemId);
+      if (item?.journalUuid) {
+        openJournalByUuid(item.journalUuid);
+        return;
+      }
+      if (canUserEditBoard(this.caseId)) this._editCard(collection, itemId);
+    }
+
+    async _toggleFavorite() {
+      if (!canFavorite()) return;
+      await toggleFavorite(this.caseId);
+      this.render(false);
+    }
+
+    _onBoardDragOver(event: any) {
+      if (!canUserEditBoard(this.caseId)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      this.element[0]?.querySelector("[data-csi-board-viewport]")?.classList.add("is-drop-target");
+    }
+
+    _onBoardDragLeave(event: any) {
+      const viewport = this.element[0]?.querySelector("[data-csi-board-viewport]");
+      if (event.relatedTarget && viewport?.contains(event.relatedTarget)) return;
+      viewport?.classList.remove("is-drop-target");
+    }
+
+    async _onBoardDrop(event: any) {
+      if (!canUserEditBoard(this.caseId)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.element[0]?.querySelector("[data-csi-board-viewport]")?.classList.remove("is-drop-target");
+
+      const boardPosition = this._clientToBoardPosition(event.clientX, event.clientY);
+      const parsed = await readJournalDropData(event);
+      if (!parsed) return;
+
+      const collection = await this._chooseDropCategory(parsed.name);
+      if (!collection) return;
+
+      const prefill: any = { journalUuid: parsed.uuid };
+      if (collection === "suspects" || collection === "locations") prefill.name = parsed.name;
+      else prefill.title = parsed.name;
+      if (parsed.isImage && parsed.image) prefill.image = parsed.image;
+
+      new CSIBoardItemEditor(this.caseId, collection, null, { boardPosition, prefill }).render(true);
+    }
+
+    _chooseDropCategory(name: string) {
+      const DialogClass = (globalThis as any).Dialog ?? (globalThis as any).foundry?.appv1?.api?.Dialog;
+      const safeName = escapeHtml(name || "journal page");
+      if (!DialogClass) return Promise.resolve("evidence");
+
+      return new Promise<string | null>((resolve) => {
+        let resolved = false;
+        const finish = (value: string | null) => {
+          if (resolved) return;
+          resolved = true;
+          resolve(value);
+        };
+        const buttons: any = {};
+        for (const entry of JOURNAL_DROP_COLLECTIONS) {
+          buttons[entry.id] = {
+            label: `<i class="fas fa-plus"></i> ${entry.label}`,
+            callback: () => finish(entry.id)
+          };
+        }
+        new DialogClass({
+          title: `${moduleTitle}: Add to Board`,
+          content: `<p class="csi-drop-dialog-text">Add <strong>${safeName}</strong> to this board as:</p>`,
+          buttons,
+          default: "evidence",
+          close: () => finish(null)
+        }, { classes: ["csi-toolkit", "csi-drop-dialog"] }).render(true);
+      });
     }
 
     async _deleteBoardItem(collection: string, itemId: string) {

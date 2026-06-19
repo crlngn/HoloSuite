@@ -53,6 +53,20 @@
       </div>
     {{/if}}
 
+    {{#if hasJournalField}}
+      <div class="csi-form-grid">
+        <label class="csi-span-2 csi-journal-field" data-csi-journal-drop>
+          <span>Journal</span>
+          <div class="csi-field-with-button csi-journal-link">
+            <input type="hidden" name="journalUuid" value="{{journalLink.uuid}}" data-csi-journal-input />
+            <span class="csi-journal-link-name {{#unless journalLink}}is-empty{{/unless}} {{#if journalLink.missing}}is-missing{{/if}}" data-csi-journal-name>{{#if journalLink}}{{journalLink.name}}{{else}}No journal linked. Drag a journal entry or page here.{{/if}}</span>
+            <button type="button" data-action="open-journal-link" title="Open journal" {{#unless journalLink}}disabled{{/unless}}><i class="fas fa-up-right-from-square"></i></button>
+            <button type="button" data-action="clear-journal-link" title="Unlink journal" {{#unless journalLink}}disabled{{/unless}}><i class="fas fa-xmark"></i></button>
+          </div>
+        </label>
+      </div>
+    {{/if}}
+
     <footer class="csi-editor-actions csi-board-edit-actions">
       {{#unless isNew}}
         <button type="button" class="csi-danger" data-action="delete-board-item"><i class="fas fa-trash"></i> Delete</button>

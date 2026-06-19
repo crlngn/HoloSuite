@@ -42,6 +42,7 @@ export function normalizeEvidence(data: any = {}) {
     status: normalizeEnum(data.status, EVIDENCE_STATUSES, "unknown"),
     visibility: normalizeEnum(data.visibility, VISIBILITIES, "players"),
     hidden: Boolean(data.hidden),
+    journalUuid: String(data.journalUuid || ""),
     notes: String(data.notes || "")
   };
 }
@@ -57,6 +58,7 @@ export function normalizeSuspect(data: any = {}) {
     status: normalizeEnum(data.status, SUSPECT_STATUSES, "unknown"),
     visibility: normalizeEnum(data.visibility, VISIBILITIES, "players"),
     hidden: Boolean(data.hidden),
+    journalUuid: String(data.journalUuid || ""),
     notes: String(data.notes || "")
   };
 }
@@ -70,6 +72,7 @@ export function normalizeLocation(data: any = {}) {
     description: String(data.description || ""),
     visibility: normalizeEnum(data.visibility, VISIBILITIES, "players"),
     hidden: Boolean(data.hidden),
+    journalUuid: String(data.journalUuid || ""),
     notes: String(data.notes || "")
   };
 }
@@ -82,7 +85,8 @@ export function normalizeTimelineItem(data: any = {}) {
     description: String(data.description || ""),
     linkedItemIds: Array.isArray(data.linkedItemIds) ? data.linkedItemIds.map(String) : [],
     visibility: normalizeEnum(data.visibility, VISIBILITIES, "players"),
-    hidden: Boolean(data.hidden)
+    hidden: Boolean(data.hidden),
+    journalUuid: String(data.journalUuid || "")
   };
 }
 

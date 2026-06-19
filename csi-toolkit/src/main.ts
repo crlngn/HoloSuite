@@ -92,7 +92,31 @@ declare const ui: any;
       description: "Open case files, evidence boards, and investigation tools.",
       open: () => game.user?.isGM ? openCaseManager() : openCaseBrowser()
     });
+
+    if (typeof api.registerLauncherSection === "function") {
+      api.registerLauncherSection({
+        id: MODULE_ID,
+        title: "Favorites",
+        icon: "fa-solid fa-bookmark",
+        render: () => renderFavoritesSectionHtml(),
+        onClick: (caseId: string) => openCaseBoard(caseId, { playerMode: !game.user?.isGM })
+      });
+    }
     return true;
+  }
+
+  function renderFavoritesSectionHtml() {
+    const boards = getFavoriteBoards();
+    if (!boards.length) {
+      return `<p class="holosuite-section-empty">No favorited boards yet.</p>`;
+    }
+    return boards.map(board => `
+      <button type="button" class="holosuite-section-item" data-holosuite-section-item="${escapeHtml(board.id)}">
+        <span class="holosuite-section-item-icon"><i class="fa-solid fa-fingerprint"></i></span>
+        <span class="holosuite-section-item-label">${escapeHtml(board.title)}</span>
+        <span class="holosuite-section-item-meta">${escapeHtml(labelize(board.status))}</span>
+      </button>
+    `).join("");
   }
 
   function getCases() {
@@ -101,6 +125,61 @@ declare const ui: any;
 
   async function setCases(cases) {
     return game.settings.set(MODULE_ID, "cases", cases ?? {});
+  }
+
+  function getFavorites() {
+    try {
+      const raw = game.settings.get(MODULE_ID, "favoriteBoards");
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function isFavorite(caseId) {
+    return getFavorites().includes(String(caseId));
+  }
+
+  function canFavorite() {
+    return game.user?.isGM === true;
+  }
+
+  async function toggleFavorite(caseId) {
+    if (!caseId) return false;
+    if (!canFavorite()) {
+      ui.notifications?.warn(`${MODULE_TITLE}: Only the GM can change favorite boards.`);
+      return isFavorite(caseId);
+    }
+    const id = String(caseId);
+    const favorites = getFavorites();
+    const index = favorites.indexOf(id);
+    const wasFavorite = index >= 0;
+    if (wasFavorite) favorites.splice(index, 1);
+    else favorites.push(id);
+    await game.settings.set(MODULE_ID, "favoriteBoards", favorites);
+    broadcastFavoritesUpdated();
+    refreshFavoritesLauncher();
+    return !wasFavorite;
+  }
+
+  function getFavoriteBoards() {
+    const isGM = game.user?.isGM === true;
+    const cases = getCases();
+    return getFavorites()
+      .map(id => cases[id] ? normalizeCase(cases[id]) : null)
+      .filter(Boolean)
+      .filter(csiCase => isGM || csiCase.visibility !== "gm")
+      .map(csiCase => ({ id: csiCase.id, title: csiCase.title, status: csiCase.status }));
+  }
+
+  function broadcastFavoritesUpdated() {
+    game.socket?.emit(SOCKET_NAME, { type: "favorites-updated", userId: game.user?.id });
+  }
+
+  function refreshFavoritesLauncher() {
+    const holosuite = game.modules.get("holosuite-core");
+    const api = holosuite?.active ? holosuite.api : null;
+    api?.refreshLauncher?.();
   }
 
   function hasActiveGM() {
@@ -378,6 +457,13 @@ declare const ui: any;
       return;
     }
 
+    if (message.type === "favorites-updated") {
+      if (message.userId && message.userId === game.user?.id) return;
+      refreshFavoritesLauncher();
+      for (const board of state.boards.values()) if (board.rendered) board.render(true);
+      return;
+    }
+
   }
 
   const CSIBoardItemEditor = createCSIBoardItemEditorClass({
@@ -391,7 +477,9 @@ declare const ui: any;
     parseItemElement,
     saveCase,
     deleteBoardItem,
-    defaultBoardPosition
+    defaultBoardPosition,
+    openJournalByUuid,
+    readJournalDropData
   });
 
   const CSICaseBoard = createCSICaseBoardClass({
@@ -410,6 +498,10 @@ declare const ui: any;
     defaultBoardPosition,
     getRectEdgeAnchor,
     isFinitePoint,
+    openJournalByUuid,
+    readJournalDropData,
+    toggleFavorite,
+    canFavorite,
     clearBoardApp: (board: any) => {
       state.boards.delete(`${board.caseId}:${board.playerMode ? "player" : "gm"}`);
       if (state.playerBoard === board) state.playerBoard = null;
@@ -661,6 +753,7 @@ declare const ui: any;
         status: field("status"),
         description: field("description"),
         image: field("image"),
+        journalUuid: field("journalUuid"),
         notes: field("notes")
       });
     }
@@ -674,6 +767,7 @@ declare const ui: any;
         motive: field("motive"),
         alibi: field("alibi"),
         image: field("image"),
+        journalUuid: field("journalUuid"),
         notes: field("notes")
       });
     }
@@ -685,6 +779,7 @@ declare const ui: any;
         sceneId: field("sceneId"),
         image: field("image"),
         description: field("description"),
+        journalUuid: field("journalUuid"),
         notes: field("notes")
       });
     }
@@ -695,6 +790,7 @@ declare const ui: any;
         time: field("time"),
         title: field("title"),
         description: field("description"),
+        journalUuid: field("journalUuid"),
         linkedItemIds: field("linkedItemIds").split(",").map(value => value.trim()).filter(Boolean)
       });
     }
@@ -763,6 +859,8 @@ declare const ui: any;
       playerMode,
       isGM: game.user?.isGM,
       canEditBoard: canUserEditBoard(csiCase),
+      isFavorite: isFavorite(caseId),
+      canFavorite: canFavorite(),
       addCollections: BOARD_ADD_COLLECTIONS.map(collection => ({
         id: collection,
         label: labelize(singularLabel(collection))
@@ -887,6 +985,61 @@ declare const ui: any;
 
   function isFinitePoint(point) {
     return Number.isFinite(point?.x) && Number.isFinite(point?.y);
+  }
+
+  async function resolveJournalDoc(uuid) {
+    const resolver = (globalThis as any).fromUuid;
+    if (!uuid || typeof resolver !== "function") return null;
+    try {
+      return await resolver(uuid);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function openJournalByUuid(uuid) {
+    const doc = await resolveJournalDoc(uuid);
+    if (!doc) {
+      ui.notifications?.warn(`${MODULE_TITLE}: The linked journal could not be found.`);
+      return false;
+    }
+    if (doc.documentName === "JournalEntryPage" && doc.parent?.sheet) {
+      doc.parent.sheet.render(true, { pageId: doc.id });
+      return true;
+    }
+    if (doc.sheet) {
+      doc.sheet.render(true);
+      return true;
+    }
+    return false;
+  }
+
+  async function readJournalDropData(event) {
+    const TextEditorImpl = foundry.applications?.ux?.TextEditor?.implementation
+      ?? (globalThis as any).TextEditor?.implementation
+      ?? (globalThis as any).TextEditor;
+    let data = null;
+    try {
+      data = TextEditorImpl?.getDragEventData
+        ? TextEditorImpl.getDragEventData(event)
+        : JSON.parse(event.dataTransfer?.getData("text/plain") || "null");
+    } catch (error) {
+      data = null;
+    }
+    if (!data || (data.type !== "JournalEntry" && data.type !== "JournalEntryPage")) return null;
+
+    const doc = data.uuid ? await resolveJournalDoc(data.uuid) : null;
+    if (!doc) return null;
+
+    const isPage = doc.documentName === "JournalEntryPage";
+    const isImagePage = isPage && doc.type === "image" && Boolean(doc.src);
+    return {
+      uuid: data.uuid,
+      name: doc.name,
+      isPage,
+      isImage: isImagePage,
+      image: isImagePage ? doc.src : ""
+    };
   }
 
   function confirmDialog(options) {

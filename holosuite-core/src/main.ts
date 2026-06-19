@@ -1,9 +1,10 @@
-import type { HoloSuiteAppRegistration } from "../../shared/src/index";
+import type { HoloSuiteAppRegistration, HoloSuiteLauncherSection } from "../../shared/src/index";
 import { addSceneControlTool } from "./scene-controls";
 
 const MODULE_ID = "holosuite-core";
 const SETTING_DISABLE_FOR_PLAYERS = "disableForPlayers";
 const SETTING_THEME = "theme";
+const KEYBIND_OPEN_LAUNCHER = "open-launcher";
 
 const THEME_CHOICES = {
   default: "Default Cyan",
@@ -14,6 +15,7 @@ const THEME_CHOICES = {
 type HoloSuiteTheme = keyof typeof THEME_CHOICES;
 
 const registeredApps = new Map<string, HoloSuiteAppRegistration>();
+const launcherSections = new Map<string, HoloSuiteLauncherSection>();
 let launcherApp: HoloSuiteLauncher | null = null;
 let launcherObserver: MutationObserver | null = null;
 
@@ -104,6 +106,57 @@ function normalizeApp(app: HoloSuiteAppRegistration): HoloSuiteAppRegistration |
     featureId: String(app.featureId ?? id).trim() || id,
     open: app.open
   };
+}
+
+function normalizeLauncherSection(section: HoloSuiteLauncherSection): HoloSuiteLauncherSection | null {
+  const id = String(section?.id ?? "").trim();
+  if (!id || typeof section?.render !== "function") {
+    console.warn(`${MODULE_ID} | Ignoring invalid launcher section registration.`, section);
+    return null;
+  }
+
+  return {
+    id,
+    title: String(section.title ?? "").trim(),
+    icon: String(section.icon ?? "").trim(),
+    playerVisible: section.playerVisible !== false,
+    render: section.render,
+    onClick: typeof section.onClick === "function" ? section.onClick : undefined
+  };
+}
+
+function isSectionVisibleToCurrentUser(section: HoloSuiteLauncherSection): boolean {
+  if (game.user?.isGM === true) return true;
+  if (isDisabledForPlayers()) return false;
+  return section.playerVisible !== false;
+}
+
+function renderLauncherSectionsHtml(): string {
+  const sections = [...launcherSections.values()].filter(isSectionVisibleToCurrentUser);
+  if (!sections.length) return "";
+
+  return sections.map((section) => {
+    let body = "";
+    try {
+      body = String(section.render() ?? "");
+    } catch (error) {
+      console.error(`${MODULE_ID} | Launcher section "${section.id}" failed to render.`, error);
+      body = "";
+    }
+    if (!body) return "";
+    const heading = section.title
+      ? `<header class="holosuite-launcher-section-header">
+          ${section.icon ? `<i class="${escapeHtml(section.icon)}"></i>` : ""}
+          <span>${escapeHtml(section.title)}</span>
+        </header>`
+      : "";
+    return `
+      <section class="holosuite-launcher-section" data-holosuite-section="${escapeHtml(section.id)}">
+        ${heading}
+        <div class="holosuite-launcher-section-body">${body}</div>
+      </section>
+    `;
+  }).join("");
 }
 
 function renderOpenLauncherControl(controls: unknown): void {
@@ -259,6 +312,25 @@ function registerSettings(): void {
   });
 }
 
+function registerKeybindings(): void {
+  if (!game.keybindings?.register) return;
+  game.keybindings.register(MODULE_ID, KEYBIND_OPEN_LAUNCHER, {
+    name: "Open HoloSuite Command Deck",
+    hint: "Toggles the HoloSuite launcher (GM command deck or player commlink).",
+    editable: [
+      { key: "Equal", modifiers: ["Alt"] },
+      { key: "NumpadAdd", modifiers: ["Alt"] }
+    ],
+    restricted: false,
+    onDown: () => {
+      if (game.user?.isGM !== true && isDisabledForPlayers()) return false;
+      if (launcherApp?.rendered) launcherApp.close();
+      else api.openLauncher();
+      return true;
+    }
+  });
+}
+
 function normalizeTheme(value: unknown): HoloSuiteTheme {
   return Object.hasOwn(THEME_CHOICES, String(value)) ? String(value) as HoloSuiteTheme : "default";
 }
@@ -360,6 +432,7 @@ function renderLauncherHtml(): string {
           <div class="holosuite-app-grid">
             ${appCards}
           </div>
+          ${renderLauncherSectionsHtml()}
         </main>
         <footer class="holosuite-dock">
           <button type="button" data-holosuite-action="close" title="Close"><i class="fa-solid fa-circle-xmark"></i></button>
@@ -374,6 +447,14 @@ function bindLauncherControls(root: HTMLElement | null): void {
   root.querySelectorAll<HTMLElement>("[data-holosuite-app]").forEach((button) => {
     button.addEventListener("click", (event) => {
       openRegisteredApp((event.currentTarget as HTMLElement).dataset.holosuiteApp ?? "");
+    });
+  });
+  root.querySelectorAll<HTMLElement>("[data-holosuite-section-item]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      const el = event.currentTarget as HTMLElement;
+      const sectionId = el.closest<HTMLElement>("[data-holosuite-section]")?.dataset.holosuiteSection;
+      const section = sectionId ? launcherSections.get(sectionId) : null;
+      section?.onClick?.(el.dataset.holosuiteSectionItem, event);
     });
   });
   root.querySelectorAll<HTMLElement>("[data-holosuite-action='close']").forEach((button) => {
@@ -454,6 +535,21 @@ const api = {
   getApps(): HoloSuiteAppRegistration[] {
     return [...registeredApps.values()];
   },
+  registerLauncherSection(section: HoloSuiteLauncherSection): HoloSuiteLauncherSection | null {
+    const normalized = normalizeLauncherSection(section);
+    if (!normalized) return null;
+    launcherSections.set(normalized.id, normalized);
+    launcherApp?.render(false);
+    return normalized;
+  },
+  unregisterLauncherSection(id: string): boolean {
+    const removed = launcherSections.delete(String(id ?? ""));
+    if (removed) launcherApp?.render(false);
+    return removed;
+  },
+  refreshLauncher(): void {
+    launcherApp?.render(false);
+  },
   async openLauncher(): Promise<HoloSuiteLauncher | null> {
     if (!launcherApp) launcherApp = new HoloSuiteLauncher();
     await launcherApp.render(true);
@@ -479,6 +575,7 @@ function exposeApi(): void {
 
 Hooks.once("init", () => {
   registerSettings();
+  registerKeybindings();
   exposeApi();
 });
 

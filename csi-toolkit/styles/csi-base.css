@@ -384,3 +384,46 @@
   gap: 6px;
 }
 
+.csi-field-with-button.csi-journal-link {
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
+  align-items: stretch;
+}
+
+.csi-drop-dialog .csi-drop-dialog-text {
+  margin: 0 0 10px;
+}
+
+.csi-drop-dialog .dialog-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.csi-journal-link-name {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 10px;
+  overflow: hidden;
+  border: 1px solid rgba(95, 220, 255, 0.18);
+  border-radius: var(--hs-radius);
+  background: #061117;
+  color: var(--csi-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.csi-journal-link-name.is-empty {
+  color: var(--csi-muted);
+  font-style: italic;
+}
+
+.csi-journal-link-name.is-missing {
+  color: var(--csi-red);
+}
+
+.csi-journal-field.is-drop-target .csi-journal-link-name {
+  border-color: var(--csi-cyan);
+  box-shadow: 0 0 0 2px rgba(95, 220, 255, 0.18);
+}
+

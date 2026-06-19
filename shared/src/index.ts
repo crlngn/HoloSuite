@@ -16,10 +16,24 @@ export interface HoloSuiteLicenseResult {
   message?: string;
 }
 
+export interface HoloSuiteLauncherSection {
+  id: string;
+  title?: string;
+  icon?: string;
+  playerVisible?: boolean;
+  /** Returns the inner HTML for the section body. Called on every launcher render. */
+  render: () => string;
+  /** Invoked when an element with [data-holosuite-section-item] inside this section is clicked. */
+  onClick?: (itemId: string, event: Event) => void;
+}
+
 export interface HoloSuiteApi {
   registerApp(app: HoloSuiteAppRegistration): HoloSuiteAppRegistration | null;
   unregisterApp(id: string): boolean;
   getApps(): HoloSuiteAppRegistration[];
+  registerLauncherSection(section: HoloSuiteLauncherSection): HoloSuiteLauncherSection | null;
+  unregisterLauncherSection(id: string): boolean;
+  refreshLauncher(): void;
   openLauncher(): unknown | Promise<unknown>;
   checkLicense(force?: boolean): Promise<HoloSuiteLicenseResult>;
   isFeatureAllowed(featureId: string): boolean;

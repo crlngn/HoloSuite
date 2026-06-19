@@ -33,6 +33,48 @@
   font-size: 18px;
 }
 
+.csi-case-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.csi-favorite-toggle,
+.csi-favorite-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  color: var(--csi-muted);
+}
+
+.csi-favorite-toggle i,
+.csi-favorite-indicator i {
+  margin-right: 0;
+}
+
+.csi-favorite-toggle.is-favorite,
+.csi-favorite-indicator {
+  color: var(--csi-cyan);
+  border: 0;
+}
+
+.csi-favorite-toggle:hover {
+  color: var(--csi-amber);
+  border-color: var(--csi-amber);
+}
+
+.csi-favorite-indicator {
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: default;
+}
+
 .csi-board-header p {
   font-size: 12px;
 }
@@ -206,6 +248,10 @@
     linear-gradient(90deg, rgba(95, 220, 255, 0.08) 1px, transparent 1px) 0 0 / 48px 48px,
     linear-gradient(rgba(95, 220, 255, 0.08) 1px, transparent 1px) 0 0 / 48px 48px,
     radial-gradient(circle at center, rgba(95, 220, 255, 0.06), transparent 38rem);
+}
+
+.csi-board-viewport.is-drop-target {
+  box-shadow: inset 0 0 0 2px var(--csi-cyan), inset 0 0 36px rgba(95, 220, 255, 0.22);
 }
 
 .csi-board-context-menu {
@@ -509,7 +555,9 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: 104px;
+  min-height: 84px;
+  max-height: 200px;
+  height: auto;
   object-fit: cover;
   background: rgba(3, 9, 12, 0.82);
   color: rgba(95, 220, 255, 0.48);
@@ -610,7 +658,7 @@
 
 .csi-timeline li {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 1fr minmax(0, 2fr);
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px dashed rgba(95, 220, 255, 0.18);

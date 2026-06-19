@@ -286,6 +286,73 @@
   padding: 20px;
 }
 
+.holosuite-launcher-section {
+  margin-top: 16px;
+}
+
+.holosuite-launcher-section-header {
+  align-items: center;
+  color: var(--hs-cyan);
+  display: flex;
+  font-size: 11px;
+  gap: 8px;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.holosuite-launcher-section-body {
+  display: grid;
+  gap: 8px;
+}
+
+.holosuite-section-item {
+  align-items: center;
+  background: var(--hs-card-bg);
+  border: 1px solid var(--hs-line);
+  color: var(--hs-text);
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.holosuite-section-item:hover {
+  border-color: var(--hs-amber);
+  box-shadow: inset 0 0 24px rgba(255, 207, 106, 0.13);
+}
+
+.holosuite-section-item-icon {
+  color: var(--hs-cyan);
+  flex: 0 0 auto;
+  font-size: 15px;
+}
+
+.holosuite-section-item-label {
+  flex: 1 1 auto;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.holosuite-section-item-meta {
+  color: var(--hs-muted);
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.holosuite-section-empty {
+  border: 1px dashed var(--hs-line);
+  color: var(--hs-muted);
+  font-family: var(--hs-font-ui);
+  margin: 0;
+  padding: 14px;
+}
+
 .holosuite-dock {
   justify-content: center;
   padding-top: 14px;

@@ -10,7 +10,16 @@
           {{#if case.image}}<img src="{{case.image}}" alt="" />{{/if}}
           <div>
             <p class="csi-kicker">Case File / {{csiLabel case.status}}</p>
-            <h1>{{case.title}}</h1>
+            <div class="csi-case-title-row">
+              <h1>{{case.title}}</h1>
+              {{#if canFavorite}}
+                <button type="button" class="csi-favorite-toggle {{#if isFavorite}}is-favorite{{/if}}" data-action="toggle-favorite" title="{{#if isFavorite}}Remove board from favorites{{else}}Add board to favorites{{/if}}" aria-pressed="{{#if isFavorite}}true{{else}}false{{/if}}">
+                  <i class="{{#if isFavorite}}fas{{else}}far{{/if}} fa-bookmark"></i>
+                </button>
+              {{else}}{{#if isFavorite}}
+                <span class="csi-favorite-indicator" title="Favorited board"><i class="fas fa-bookmark"></i></span>
+              {{/if}}{{/if}}
+            </div>
             <p>{{case.subtitle}}</p>
           </div>
         </div>
