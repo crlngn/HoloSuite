@@ -204,3 +204,13 @@
   box-shadow: 0 0 14px rgba(94, 231, 255, 0.25);
 }
 
+
+/* GM-managed (granted) personal contacts */
+.cybercall-contact-managed-tag {
+  color: var(--hs-color-warning);
+  font-size: 11px;
+}
+
+.cybercall-contact-managed-row {
+  border-left: 2px solid var(--hs-color-warning);
+}

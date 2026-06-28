@@ -3,8 +3,11 @@ import {
   DEFAULT_CALL,
   clampSignal,
   createCallId,
+  generateUniqueNumber,
   normalizeCallData,
-  normalizeContact
+  normalizeContact,
+  normalizeDirectoryEntry,
+  phoneDigits
 } from "./call-model";
 import {
   COMPOSER_TEMPLATE_PATH,
@@ -69,13 +72,16 @@ function getContactsStore() {
 }
 
 function getContacts() {
-  const contacts = getContactsStore()[getWorldContactsKey()];
-  if (!Array.isArray(contacts)) return [];
+  const stored = getContactsStore()[getWorldContactsKey()];
+  const personal = Array.isArray(stored)
+    ? stored.map(normalizeContact).filter((contact) => contact.name && contact.number)
+    : [];
 
-  return contacts
-    .map(normalizeContact)
-    .filter((contact) => contact.name && contact.number)
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const managed = getManagedContacts();
+  const managedDigits = new Set(managed.map((contact) => phoneDigits(contact.number)));
+  const personalOnly = personal.filter((contact) => !managedDigits.has(phoneDigits(contact.number)));
+
+  return [...managed, ...personalOnly].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getGroupContacts() {
@@ -109,6 +115,63 @@ async function saveGroupContacts(contacts) {
     action: "groupContactsChanged",
     contacts: groupContactsCache
   });
+}
+
+function getDirectory() {
+  const entries = game.settings.get(MODULE_ID, "directory");
+  if (!Array.isArray(entries)) return [];
+  return entries.map(normalizeDirectoryEntry);
+}
+
+async function saveDirectory(entries) {
+  if (!game.user.isGM) return;
+  const normalized = entries.map(normalizeDirectoryEntry);
+  await game.settings.set(MODULE_ID, "directory", normalized);
+  game.socket.emit(SOCKET_NAME, { action: "directoryChanged" });
+}
+
+function findDirectoryEntryByActor(actorId) {
+  if (!actorId) return null;
+  return getDirectory().find((entry) => entry.actorId === actorId) ?? null;
+}
+
+function findDirectoryEntryByNumber(number) {
+  const digits = phoneDigits(number);
+  if (!digits) return null;
+  return getDirectory().find((entry) => phoneDigits(entry.number) === digits) ?? null;
+}
+
+function getUsedNumberDigits() {
+  const used = new Set<string>();
+  for (const entry of getDirectory()) used.add(phoneDigits(entry.number));
+  for (const contact of getGroupContacts()) used.add(phoneDigits(contact.number));
+  used.delete("");
+  return used;
+}
+
+function resolveActorOwner(actorId) {
+  const actor = actorId ? game.actors?.get(actorId) : null;
+  if (!actor) return "";
+  const owners = (game.users?.contents ?? []).filter(
+    (user) => !user.isGM && actor.testUserPermission?.(user, "OWNER")
+  );
+  const active = owners.find((user) => user.active);
+  return (active ?? owners[0])?.id ?? "";
+}
+
+// Personal-tab contacts pushed by the GM: directory entries granted to me. Read-only here.
+function getManagedContacts() {
+  const userId = game.user?.id;
+  if (!userId) return [];
+  return getDirectory()
+    .filter((entry) => entry.grantedUserIds.includes(userId) && entry.name && entry.number)
+    .map((entry) => normalizeContact({
+      id: entry.id,
+      name: entry.name,
+      number: entry.number,
+      image: entry.image,
+      managed: true
+    }));
 }
 
 async function addContact(name: any, number: any, scope = "personal", image: any = "") {
@@ -304,6 +367,20 @@ function bindComposerControls(app: any, html: any = null) {
         return;
       }
 
+      if (action === "add-player-contact") {
+        await addPlayerContact({
+          actorId: form.elements.actorId?.value ?? "",
+          callerName: callData.callerName,
+          image: callData.image
+        });
+        return;
+      }
+
+      if (action === "manage-player-contacts") {
+        await manageDirectory();
+        return;
+      }
+
       if (action === "browse-image") {
         const input = form.elements.image;
         const Picker = (globalThis as any).FilePicker ?? (globalThis as any).foundry?.applications?.apps?.FilePicker;
@@ -380,7 +457,8 @@ function bindContactsControls(app: any, html: any = null) {
       const contact = contactList.find((entry) => entry.id === contactId);
 
       if (action === "remove") {
-        await removeContact(contactId, scope);
+        if (scope === "managed") await removeManagedContact(contactId);
+        else await removeContact(contactId, scope);
         return;
       }
 
@@ -484,7 +562,74 @@ function endCallForEveryone(callId) {
   endCall(callId);
 }
 
+function resolveCallOwnerUserId(contact) {
+  const entry = findDirectoryEntryByNumber(contact.number);
+  if (!entry) return "";
+  // Re-resolve from the live actor when possible so ownership changes are respected.
+  if (entry.actorId) {
+    const liveOwner = resolveActorOwner(entry.actorId);
+    if (liveOwner) return liveOwner;
+  }
+  return entry.ownerUserId;
+}
+
+async function placePrivateCall(contact, owner) {
+  const callId = createCallId();
+  const callerName = String(game.user?.character?.name ?? game.user?.name ?? "Unknown Caller").trim();
+  const callerImage = String(game.user?.character?.img ?? game.user?.avatar ?? "").trim();
+  const baseCall = {
+    id: callId,
+    signal: game.settings.get(MODULE_ID, "defaultSignal"),
+    variant: "standard",
+    fullscreen: false,
+    accepted: false,
+    allowBroadcast: false,
+    callerUserId: game.user.id,
+    contactNumber: contact.number
+  };
+
+  const outgoingCall = normalizeCallData({
+    ...baseCall,
+    callerName: contact.name,
+    subtitle: `Comms ${contact.number}`,
+    image: contact.image,
+    message: `Connecting to ${contact.name}...`,
+    canAccept: false,
+    canDecline: false,
+    outgoing: true,
+    ringing: true
+  });
+
+  const incomingCall = normalizeCallData({
+    ...baseCall,
+    callerName,
+    subtitle: "Incoming call",
+    image: callerImage,
+    message: `${callerName} is calling.`,
+    canAccept: true,
+    canDecline: true,
+    ringing: true
+  });
+
+  game.socket.emit(SOCKET_NAME, {
+    action: "incomingCall",
+    targetUserId: owner.id,
+    callerName,
+    contactName: contact.name,
+    callData: incomingCall
+  });
+
+  return openCall(outgoingCall);
+}
+
 async function requestCallToGM(contact) {
+  // If the dialed number belongs to another user's character, connect the two of them directly.
+  const ownerUserId = resolveCallOwnerUserId(contact);
+  const owner = ownerUserId ? game.users?.get(ownerUserId) : null;
+  if (owner && owner.id !== game.user.id) {
+    return placePrivateCall(contact, owner);
+  }
+
   if (game.user.isGM) {
     return openCall({
       callerName: contact.name,
@@ -606,6 +751,269 @@ async function broadcastCall(callData: any = {}) {
   return openCall({ ...call, outgoing: true });
 }
 
+async function addPlayerContact(source: any = {}) {
+  if (!game.user.isGM) {
+    ui.notifications?.warn?.("Only the GM can add contacts to player phones.");
+    return;
+  }
+
+  const actor = source.actorId ? game.actors?.get(source.actorId) : null;
+  const actorId = actor?.id ?? "";
+  const name = String(source.callerName ?? "").trim() || actor?.name || "";
+  const image = String(source.image ?? "").trim() || actor?.img || "";
+  if (!name) {
+    ui.notifications?.warn?.("Enter a caller name or choose an actor before adding a contact.");
+    return;
+  }
+
+  const existing = actorId ? findDirectoryEntryByActor(actorId) : null;
+  const ownerUserId = actorId ? resolveActorOwner(actorId) : "";
+  const ownerName = ownerUserId ? (game.users?.get(ownerUserId)?.name ?? "") : "";
+  const suggestedNumber = existing?.number || generateUniqueNumber(getUsedNumberDigits());
+  const players = (game.users?.contents ?? []).filter((user) => !user.isGM);
+  const grantedSet = new Set(existing?.grantedUserIds ?? []);
+
+  const result = await promptRecipients({ name, image, number: suggestedNumber, players, grantedSet, ownerName });
+  if (!result) return;
+
+  const finalNumber = String(result.number ?? "").trim() || suggestedNumber;
+  const finalDigits = phoneDigits(finalNumber);
+  const collision = getDirectory().find(
+    (entry) => phoneDigits(entry.number) === finalDigits && entry.id !== existing?.id
+  );
+  if (collision) {
+    ui.notifications?.warn?.(`Number ${finalNumber} is already assigned to ${collision.name || "another contact"}.`);
+    return;
+  }
+
+  const directory = getDirectory();
+  const entry = existing ? directory.find((item) => item.id === existing.id) : null;
+  if (entry) {
+    Object.assign(entry, { number: finalNumber, name, image, actorId, ownerUserId, grantedUserIds: result.recipients });
+  } else {
+    directory.push(normalizeDirectoryEntry({ number: finalNumber, name, image, actorId, ownerUserId, grantedUserIds: result.recipients }));
+  }
+
+  await saveDirectory(directory);
+  await refreshContacts();
+  ui.notifications?.info?.(`Added ${name} (${finalNumber}) to ${result.recipients.length} player contact list(s).`);
+}
+
+function promptRecipients({ name, image, number, players, grantedSet, ownerName }: any) {
+  const routeLine = ownerName
+    ? `Calls to this number reach <strong>${escapeHTML(ownerName)}</strong>.`
+    : "No player owns this actor &mdash; calls to this number route to the GM.";
+  const rows = players.length
+    ? players.map((user) =>
+        `<label class="cybercall-recipient"><input type="checkbox" name="recipient" value="${escapeHTML(user.id)}" ${grantedSet.has(user.id) ? "checked" : ""}><span>${escapeHTML(user.name)}</span></label>`
+      ).join("")
+    : `<p class="cybercall-recipient-empty">No players exist in this world yet.</p>`;
+  const content = `
+    <div class="cybercall-add-contact">
+      <div class="cybercall-add-contact-head">
+        ${image ? `<img src="${escapeHTML(image)}" alt="">` : ""}
+        <strong>${escapeHTML(name)}</strong>
+      </div>
+      <label class="cybercall-add-contact-number">
+        <span>Phone number</span>
+        <span class="cybercall-add-contact-number-row">
+          <input type="text" name="number" value="${escapeHTML(number)}" autocomplete="off">
+          <button type="button" data-cybercall-regen title="Generate a new unused number"><i class="fa-solid fa-rotate"></i></button>
+        </span>
+      </label>
+      <p class="cybercall-add-contact-route">${routeLine}</p>
+      <fieldset class="cybercall-recipients">
+        <legend>Players with access to this contact</legend>
+        ${rows}
+      </fieldset>
+    </div>
+  `;
+
+  const bindRegen = (root: any) => {
+    const button = root?.querySelector?.("[data-cybercall-regen]");
+    const input = root?.querySelector?.("input[name='number']");
+    button?.addEventListener("click", () => {
+      if (input) input.value = generateUniqueNumber(getUsedNumberDigits());
+    });
+  };
+  const readForm = (form: any) => ({
+    number: form?.elements?.number?.value ?? "",
+    recipients: Array.from(form?.querySelectorAll("input[name='recipient']:checked") ?? []).map((el: any) => el.value)
+  });
+
+  const DialogV2 = (globalThis as any).foundry?.applications?.api?.DialogV2;
+  if (DialogV2?.wait) {
+    return DialogV2.wait({
+      window: { title: `Add ${name} to player contacts`, icon: "fa-solid fa-address-book" },
+      classes: ["cybercall-add-contact-dialog"],
+      content,
+      rejectClose: false,
+      render: (_event: any, dialog: any) => bindRegen(dialog?.element ?? dialog),
+      buttons: [
+        { action: "save", label: "Save", icon: "fa-solid fa-floppy-disk", default: true, callback: (_event: any, button: any) => readForm(button.form) },
+        { action: "cancel", label: "Cancel", icon: "fa-solid fa-xmark" }
+      ]
+    }).then((value: any) => (value && value !== "cancel") ? value : null);
+  }
+
+  const DialogV1 = (globalThis as any).Dialog;
+  if (!DialogV1) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (value: any) => { if (!resolved) { resolved = true; resolve(value); } };
+    new DialogV1({
+      title: `Add ${name} to player contacts`,
+      content: `<form class="cybercall-add-contact-dialog">${content}</form>`,
+      buttons: {
+        save: { label: "Save", callback: (html: any) => { const form = html[0]?.querySelector("form"); finish(form ? readForm(form) : null); } },
+        cancel: { label: "Cancel", callback: () => finish(null) }
+      },
+      default: "save",
+      render: (html: any) => bindRegen(html[0]),
+      close: () => finish(null)
+    }).render(true);
+  });
+}
+
+async function removeManagedContact(entryId) {
+  if (!entryId) return;
+
+  if (game.user.isGM) {
+    const directory = getDirectory();
+    const entry = directory.find((item) => item.id === entryId);
+    if (!entry) return;
+    entry.grantedUserIds = entry.grantedUserIds.filter((id) => id !== game.user.id);
+    await saveDirectory(directory);
+    await refreshContacts();
+    return;
+  }
+
+  if (!hasActiveGM()) {
+    ui.notifications?.warn?.("A GM must be connected to remove this contact.");
+    return;
+  }
+
+  game.socket.emit(SOCKET_NAME, {
+    action: "managedContactRemove",
+    entryId,
+    userId: game.user.id
+  });
+  ui.notifications?.info?.("Contact removal sent to the GM.");
+}
+
+async function editDirectoryEntry(entryId) {
+  if (!game.user.isGM) return;
+  const entry = getDirectory().find((item) => item.id === entryId);
+  if (!entry) return;
+
+  const ownerName = entry.ownerUserId ? (game.users?.get(entry.ownerUserId)?.name ?? "") : "";
+  const players = (game.users?.contents ?? []).filter((user) => !user.isGM);
+  const result = await promptRecipients({
+    name: entry.name,
+    image: entry.image,
+    number: entry.number,
+    players,
+    grantedSet: new Set(entry.grantedUserIds),
+    ownerName
+  });
+  if (!result) return;
+
+  const finalNumber = String(result.number ?? "").trim() || entry.number;
+  const finalDigits = phoneDigits(finalNumber);
+  const collision = getDirectory().find(
+    (item) => phoneDigits(item.number) === finalDigits && item.id !== entry.id
+  );
+  if (collision) {
+    ui.notifications?.warn?.(`Number ${finalNumber} is already assigned to ${collision.name || "another contact"}.`);
+    return;
+  }
+
+  const directory = getDirectory();
+  const target = directory.find((item) => item.id === entryId);
+  if (!target) return;
+  target.number = finalNumber;
+  target.grantedUserIds = result.recipients;
+  await saveDirectory(directory);
+  await refreshContacts();
+}
+
+async function deleteDirectoryEntry(entryId) {
+  if (!game.user.isGM) return;
+  const entry = getDirectory().find((item) => item.id === entryId);
+  if (!entry) return;
+
+  const DialogV2 = (globalThis as any).foundry?.applications?.api?.DialogV2;
+  const confirmContent = `<p>Remove <strong>${escapeHTML(entry.name)}</strong> (${escapeHTML(entry.number)}) from all player phones?</p>`;
+  const confirmed = DialogV2?.confirm
+    ? await DialogV2.confirm({ window: { title: "Delete Player Contact" }, content: confirmContent, rejectClose: false })
+    : (globalThis as any).confirm?.(`Remove ${entry.name} (${entry.number}) from all player phones?`);
+  if (!confirmed) return;
+
+  await saveDirectory(getDirectory().filter((item) => item.id !== entryId));
+  await refreshContacts();
+}
+
+function buildManageDirectoryContent() {
+  const directory = getDirectory();
+  if (!directory.length) {
+    return `<p class="cybercall-manage-empty">No contacts have been assigned to players yet. Use &ldquo;Add to Player Contacts&rdquo; on the composer.</p>`;
+  }
+  const rows = directory.map((entry) => {
+    const owner = entry.ownerUserId ? (game.users?.get(entry.ownerUserId)?.name ?? "Unknown") : "GM (NPC)";
+    const grantees = entry.grantedUserIds.map((id) => game.users?.get(id)?.name).filter(Boolean);
+    const heldBy = grantees.length ? grantees.join(", ") : "no one";
+    return `
+      <li class="cybercall-manage-row" data-entry-id="${escapeHTML(entry.id)}">
+        <div class="cybercall-manage-info">
+          <strong>${escapeHTML(entry.name)}</strong>
+          <span class="cybercall-manage-meta">${escapeHTML(entry.number)} &middot; reaches ${escapeHTML(owner)}</span>
+          <span class="cybercall-manage-held">Held by: ${escapeHTML(heldBy)}</span>
+        </div>
+        <div class="cybercall-manage-actions">
+          <button type="button" data-dir-action="edit" title="Edit number and access"><i class="fa-solid fa-pen"></i></button>
+          <button type="button" data-dir-action="delete" title="Delete for all players"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </li>
+    `;
+  }).join("");
+  return `<ul class="cybercall-manage-list">${rows}</ul>`;
+}
+
+async function manageDirectory() {
+  if (!game.user.isGM) {
+    ui.notifications?.warn?.("Only the GM can manage player contacts.");
+    return;
+  }
+  const DialogV2 = (globalThis as any).foundry?.applications?.api?.DialogV2;
+  if (!DialogV2?.wait) {
+    ui.notifications?.warn?.("Directory management requires DialogV2 (Foundry v12+).");
+    return;
+  }
+
+  const bindRows = (dialog: any) => {
+    const root = dialog?.element ?? dialog;
+    root?.querySelectorAll?.("[data-dir-action]").forEach((button: any) => {
+      button.addEventListener("click", async () => {
+        const entryId = button.closest("[data-entry-id]")?.dataset.entryId;
+        const action = button.dataset.dirAction;
+        await dialog.close();
+        if (action === "edit") await editDirectoryEntry(entryId);
+        else if (action === "delete") await deleteDirectoryEntry(entryId);
+        manageDirectory();
+      });
+    });
+  };
+
+  await DialogV2.wait({
+    window: { title: "Manage Player Contacts", icon: "fa-solid fa-address-book" },
+    classes: ["cybercall-manage-dialog"],
+    content: buildManageDirectoryContent(),
+    rejectClose: false,
+    render: (_event: any, dialog: any) => bindRows(dialog),
+    buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-xmark", default: true }]
+  });
+}
+
 async function handleSocketMessage(message) {
   if (!message) return;
   if (Array.isArray(message.targetUserIds) && message.targetUserIds.length && !message.targetUserIds.includes(game.user?.id)) {
@@ -624,6 +1032,43 @@ async function handleSocketMessage(message) {
   if (message.action === "playerCallRequest") {
     if (!game.user.isGM) return;
     openCall(message.callData);
+    return;
+  }
+
+  if (message.action === "incomingCall") {
+    if (!canUseCyberCall()) return;
+    const base = message.callData ?? {};
+    if (message.targetUserId && message.targetUserId === game.user.id) {
+      openCall(base);
+      return;
+    }
+    // GMs receive a non-interactive monitor copy for oversight.
+    if (game.user.isGM) {
+      openCall(normalizeCallData({
+        ...base,
+        subtitle: `Monitoring · ${message.callerName ?? base.callerName ?? "Caller"} → ${message.contactName ?? "contact"}`,
+        message: `${message.callerName ?? base.callerName ?? "A caller"} is calling ${message.contactName ?? "a contact"}.`,
+        canAccept: false,
+        canDecline: true,
+        ringing: false
+      }));
+    }
+    return;
+  }
+
+  if (message.action === "managedContactRemove") {
+    if (!game.user.isGM) return;
+    const directory = getDirectory();
+    const entry = directory.find((item) => item.id === message.entryId);
+    if (!entry) return;
+    entry.grantedUserIds = entry.grantedUserIds.filter((id) => id !== message.userId);
+    await saveDirectory(directory);
+    await refreshContacts();
+    return;
+  }
+
+  if (message.action === "directoryChanged") {
+    await refreshContacts();
     return;
   }
 
@@ -826,6 +1271,15 @@ function registerSettings() {
     scope: "world",
     config: false,
     type: Object,
+    default: []
+  });
+
+  game.settings.register(MODULE_ID, "directory", {
+    name: "CyberCall Phone Directory",
+    hint: "GM-managed registry of assigned numbers, the actors behind them, and which players hold each contact.",
+    scope: "world",
+    config: false,
+    type: Array,
     default: []
   });
 }

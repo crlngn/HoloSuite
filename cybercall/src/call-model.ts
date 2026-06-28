@@ -85,6 +85,43 @@ export function normalizeContact(contact: any = {}) {
     name: String(contact.name ?? "").trim(),
     number: String(contact.number ?? "").trim(),
     image: String(contact.image ?? contact.img ?? "").trim(),
-    initials: getInitials(contact.name)
+    initials: getInitials(contact.name),
+    managed: contact.managed === true
   };
+}
+
+export function normalizeDirectoryEntry(entry: any = {}) {
+  return {
+    id: String(entry.id ?? createCallId()),
+    number: String(entry.number ?? "").trim(),
+    name: String(entry.name ?? "").trim(),
+    image: String(entry.image ?? entry.img ?? "").trim(),
+    actorId: String(entry.actorId ?? "").trim(),
+    ownerUserId: String(entry.ownerUserId ?? "").trim(),
+    grantedUserIds: Array.isArray(entry.grantedUserIds) ? entry.grantedUserIds.map(String) : []
+  };
+}
+
+export function phoneDigits(value: unknown) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function randomDigits(count: number) {
+  let digits = "";
+  for (let index = 0; index < count; index += 1) digits += Math.floor(Math.random() * 10);
+  return digits;
+}
+
+// Realistic NANP-style number: (NXX) NXX-XXXX with N in 2-9.
+export function generatePhoneNumber() {
+  const nxx = () => `${2 + Math.floor(Math.random() * 8)}${randomDigits(2)}`;
+  return `(${nxx()}) ${nxx()}-${randomDigits(4)}`;
+}
+
+export function generateUniqueNumber(usedDigits: Set<string>) {
+  for (let attempt = 0; attempt < 10000; attempt += 1) {
+    const candidate = generatePhoneNumber();
+    if (!usedDigits.has(phoneDigits(candidate))) return candidate;
+  }
+  return generatePhoneNumber();
 }

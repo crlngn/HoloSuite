@@ -97,6 +97,8 @@ export function renderComposerFallbackTemplate(data: any, escapeHTML: EscapeHTML
       <div class="cybercall-composer-actions">
         <button type="button" data-cybercall-compose-action="preview">Preview Locally</button>
         <button type="button" data-cybercall-compose-action="broadcast">Broadcast to Players</button>
+        <button type="button" data-cybercall-compose-action="add-player-contact">Add to Player Contacts</button>
+        <button type="button" data-cybercall-compose-action="manage-player-contacts">Manage Player Contacts</button>
         <button type="button" data-cybercall-compose-action="close-active">Close Active Call</button>
       </div>
     </form>
@@ -106,17 +108,17 @@ export function renderComposerFallbackTemplate(data: any, escapeHTML: EscapeHTML
 export function renderContactsFallbackTemplate(data: any, escapeHTML: EscapeHTML) {
   const renderContactList = (contacts: any[], scope: string) => contacts.length
     ? contacts.map((contact) => `
-        <li>
+        <li${contact.managed ? ' class="cybercall-contact-managed-row"' : ""}>
           <div class="cybercall-contact-avatar">
             ${contact.image ? `<img src="${escapeHTML(contact.image)}" alt="">` : `<span>${escapeHTML(contact.initials)}</span>`}
           </div>
           <div class="cybercall-contact-id">
-            <strong>${escapeHTML(contact.name)}</strong>
+            <strong>${escapeHTML(contact.name)}${contact.managed ? ' <span class="cybercall-contact-managed-tag" title="Added by the GM">&#9733;</span>' : ""}</strong>
             <span>${escapeHTML(contact.number)}</span>
           </div>
           <div class="cybercall-contact-actions">
             <button type="button" data-cybercall-contact-action="call" data-contact-scope="${scope}" data-contact-id="${escapeHTML(contact.id)}">Call</button>
-            <button type="button" data-cybercall-contact-action="remove" data-contact-scope="${scope}" data-contact-id="${escapeHTML(contact.id)}">Remove</button>
+            <button type="button" data-cybercall-contact-action="remove" data-contact-scope="${contact.managed ? "managed" : scope}" data-contact-id="${escapeHTML(contact.id)}">Remove</button>
           </div>
         </li>
       `).join("")
